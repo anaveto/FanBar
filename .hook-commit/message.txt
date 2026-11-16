@@ -1,20 +1,13 @@
-fix(menu): wait to take the fans while macOS spins them down
+fix(helper): wait out a fan that macOS is spinning down before unlocking
 
-When macOS stops a fan, the SMC reports F%dSt = 2 for about 11 s. The
-fan does not start again during that time, and the SMC accepts manual
-mode only from a running fan. A switch to a preset or a fixed speed then
-outlasts the helper's 10 s unlock, fails and hands the fans back.
-Quitting FanBar hands the fans back to macOS, so on a cool Mac every
-switch right after a relaunch failed.
+The SMC accepts manual mode only from a running fan. When macOS stops a
+fan, the fan does not start again for about 12 s, even with a new
+target. The driver gave the Ftst unlock 10 s, so each switch started in
+that window failed and handed the fans back. Quitting FanBar hands the
+fans back, so on a cool Mac a switch right after a relaunch failed.
 
-The app now reads F%dSt with the other fan keys. While macOS controls
-the fans and one of them spins down, the mode strip, the failure
-banner's retry, "Turn on again" and the cooling boost are disabled, and
-the progress line beside the mode strip gives the reason. They unlock
-when the fans have stopped.
-
-macOS stops the fans about 1 s after a hand-back, so a reading taken
-sooner still shows them running. After each hand-back (from the panel,
-the timer, a failed switch, an SMC lockout) and at launch, the same
-controls wait for a reading taken at least 2 s later. Macs without the
-key are unchanged.
+Measured on a Mac16,7: a just-stopped fan restarted 12.3 s after the
+stop, and an unlock from stopped fans took up to 8.1 s. Raise
+FanControlTiming.manualModeUnlockDeadline to 30 s. The app's write
+timeout and the CLI timeouts follow it; raise the Raycast extension's
+timeout to match (297 s worst case plus 13 s margin).
