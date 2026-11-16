@@ -1,0 +1,112 @@
+# Fork-only tool (never part of an upstream PR). Applies .hook-commit/patch.diff to the
+# upstream commit in .hook-commit/base.txt, commits it through FanBar's own pre-commit hook
+# (SwiftFormat, SwiftLint, unused-code scan, swift test) on the Xcode CI pins, then runs the
+# remaining CI checks (warnings-as-errors build, coverage diff gate, whole-repo lint) and the
+# panel review renders, and pushes the commit to the branch in .hook-commit/target.txt.
+name: Fork hook commit
+
+on:
+  push:
+    branches:
+      - "hook-commit/**"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: zsh {0}
+
+env:
+  # Same pin as quality.yml.
+  DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+
+jobs:
+  commit:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out the request
+        uses: actions/checkout@v4
+        with:
+          path: request
+
+      - name: Read the request
+        id: req
+        run: |
+          print "base=$(<request/.hook-commit/base.txt)" >> "$GITHUB_OUTPUT"
+          print "target=$(<request/.hook-commit/target.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out upstream at the base commit
+        uses: actions/checkout@v4
+        with:
+          repository: helson-lin/FanBar
+          ref: ${{ steps.req.outputs.base }}
+          fetch-depth: 0
+          path: work
+
+      - name: Show toolchain
+        working-directory: work
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Apply the change
+        working-directory: work
+        run: |
+          git apply --index ../request/.hook-commit/patch.diff
+          git status --short
+
+      - name: Install the pinned linters and the repository hook
+        working-directory: work
+        run: |
+          zsh scripts/install-lint-tools.sh
+          zsh scripts/install-git-hooks.sh
+          [[ "$(git config --get core.hooksPath)" == ".githooks" ]]
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+
+      - name: Commit through the pre-commit hook
+        working-directory: work
+        run: |
+          git commit --author="$(<../request/.hook-commit/author.txt)" -F ../request/.hook-commit/message.txt
+          git log -1 --format='%H %an <%ae>%n%B'
+
+      - name: Build with warnings as errors
+        working-directory: work
+        run: swift build -Xswiftc -warnings-as-errors -Xcc -Werror
+
+      - name: Tests with coverage and the diff gate
+        working-directory: work
+        run: |
+          swift test --enable-code-coverage
+          python3 scripts/coverage-report.py --base "${{ steps.req.outputs.base }}" --min-diff 60
+
+      - name: Whole-repository lint, as CI
+        working-directory: work
+        run: |
+          path=("$PWD/.build/lint-tools/bin" $path)
+          swiftlint lint --strict --baseline .swiftlint-baseline.json --reporter github-actions-logging
+          swiftformat --lint --reporter github-actions-log .
+          python3 scripts/find-unused-code.py
+
+      - name: Panel review renders
+        working-directory: work
+        run: |
+          mkdir -p "$RUNNER_TEMP/renders"
+          FANBAR_NOTICE_RENDER_DIR="$RUNNER_TEMP/renders" swift test --filter ControlNoticeRenderingTests
+          ls -l "$RUNNER_TEMP/renders"
+
+      - name: Upload the renders
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-renders
+          path: ${{ runner.temp }}/renders
+
+      - name: Push the commit
+        working-directory: work
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+            "HEAD:refs/heads/${{ steps.req.outputs.target }}"

@@ -1,0 +1,435 @@
+diff --git a/.impeccable.md b/.impeccable.md
+index 8ad2e91..b25412d 100644
+--- a/.impeccable.md
++++ b/.impeccable.md
+@@ -35,7 +35,7 @@ FanBar 面向希望快速确认 Mac 散热状态、并在需要时手动干预
+ - 风扇标签写转速区间（已停转 / 低速运行 / 中速运行 / 高速运行；0 RPM 是"已停转"，不是低速），不用含义不清的「闲置」；低速时数字退到次要色。转速位置用不可交互的填充条并标最低、最高；滑块只在固定模式出现。CPU 小图下方分别标「性能核 ×8」「能效核 ×4」，不再放平均负载。模式名用「自动」而不是笼统的「系统」。
+ - 图标用 SF Symbols（gearshape、arrow.triangle.2.circlepath、circle.lefthalf.filled、bolt.fill、lock、exclamationmark.triangle.fill）。
+ - 动效：模式选中块和磁盘展开用无回弹弹簧（阻尼 1.0，响应约 0.3s），可打断、原路返回；每 2 秒刷新只变数值和颜色，不移动元素；减少动态效果时换成 150ms 淡入淡出，降低透明度时换实心背景。
+-- 异常状态都要有设计：过热告警（标题变红 + 可操作提示条）、辅助程序未授权、模式切换失败（就地错误 + 重试）。
++- 异常状态都要有设计：过热告警（标题变红 + 可操作提示条）、辅助程序未授权、模式切换失败（就地错误 + 重试）、风扇停转中（macOS 刚停下风扇、SMC `F%dSt` = 2 时，接管风扇的模式和重试暂不可用，进度行写明原因，停转完成后自动解锁）。
+ - 设计稿：https://claude.ai/artifact/DNUTQ6LA2fHgn68r6DX1jZ
+ 
+ ### Critique Checklist (menu panel)
+diff --git a/Sources/FanBar/FanMenu.swift b/Sources/FanBar/FanMenu.swift
+index cde4d8e..127644f 100644
+--- a/Sources/FanBar/FanMenu.swift
++++ b/Sources/FanBar/FanMenu.swift
+@@ -480,7 +480,10 @@ struct FanMenu: View {
+             PanelSegmentedControl(options: modeOptions, selection: selectedMode, systemImage: modeIcon) { option in
+                 select(option)
+             }
+-            .disabled(controller.isBusy || controller.helperState != .enabled || controller.manualControlUnsupported)
++            .disabled(
++                controller.isBusy || controller.helperState != .enabled || controller.manualControlUnsupported
++                    || controller.mustWaitForFansToSpinDown
++            )
+             .animation(
+                 animatesPanel ? .spring(response: 0.3, dampingFraction: 1) : .easeOut(duration: 0.15),
+                 value: selectedMode
+@@ -624,6 +627,13 @@ struct FanMenu: View {
+         return feedback
+     }
+ 
++    private var modeProgressMessage: String? {
++        ModeSwitchReadiness.progressMessage(
++            inProgress: inProgressFeedback?.message,
++            waiting: controller.mustWaitForFansToSpinDown
++        )
++    }
++
+     /// Always laid out at a fixed height and faded in place, so a request in
+     /// flight never re-measures the panel.
+     private var modeProgressIndicator: some View {
+@@ -632,7 +642,7 @@ struct FanMenu: View {
+                 .controlSize(.small)
+                 .scaleEffect(0.6)
+                 .frame(width: 12, height: 12)
+-            Text(inProgressFeedback?.message ?? " ")
++            Text(modeProgressMessage ?? " ")
+                 .font(.caption2)
+                 .foregroundColor(.secondary)
+                 .lineLimit(1)
+@@ -640,9 +650,9 @@ struct FanMenu: View {
+         }
+         .frame(height: 16)
+         .clipped()
+-        .opacity(inProgressFeedback == nil ? 0 : 1)
+-        .animation(animatesPanel ? .easeOut(duration: 0.15) : nil, value: inProgressFeedback == nil)
+-        .accessibilityHidden(inProgressFeedback == nil)
++        .opacity(modeProgressMessage == nil ? 0 : 1)
++        .animation(animatesPanel ? .easeOut(duration: 0.15) : nil, value: modeProgressMessage == nil)
++        .accessibilityHidden(modeProgressMessage == nil)
+     }
+ 
+     /// What failed, whether the fans are safe, one way to recover, and the
+@@ -712,7 +722,10 @@ struct FanMenu: View {
+             }
+             .buttonStyle(PanelDimButtonStyle())
+             .fixedSize()
+-            .disabled(controller.isBusy)
++            .disabled(
++                controller.isBusy
++                    || ModeSwitchReadiness.locks(recovery, whileWaiting: controller.mustWaitForFansToSpinDown)
++            )
+         }
+ 
+         if feedback.detail != nil {
+@@ -879,7 +892,7 @@ struct FanMenu: View {
+             } label: {
+                 Text(fanBarText("重试", "Try again")).fontWeight(.semibold)
+             }
+-            .disabled(controller.isBusy || controller.helperState != .enabled)
++            .disabled(controller.isBusy || controller.helperState != .enabled || controller.mustWaitForFansToSpinDown)
+         }
+     }
+ 
+@@ -911,7 +924,7 @@ struct FanMenu: View {
+         }
+         .menuStyle(.borderlessButton)
+         .fixedSize()
+-        .disabled(controller.isBusy || controller.helperState != .enabled)
++        .disabled(controller.isBusy || controller.helperState != .enabled || controller.mustWaitForFansToSpinDown)
+     }
+ 
+     /// Permanent on Macs whose SMC cannot hand fan control to an app.
+@@ -1027,7 +1040,9 @@ struct FanMenu: View {
+     }
+ 
+     private var canBoostCooling: Bool {
+-        guard controller.helperState == .enabled, !controller.isBusy else { return false }
++        guard controller.helperState == .enabled, !controller.isBusy, !controller.mustWaitForFansToSpinDown else {
++            return false
++        }
+         if case .temperatureCurve = controller.mode, controller.curveCoolingPreset == Self.maximumCoolingPreset {
+             return false
+         }
+diff --git a/Sources/FanBar/ModeSwitchReadiness.swift b/Sources/FanBar/ModeSwitchReadiness.swift
+new file mode 100644
+index 0000000..571bca4
+--- /dev/null
++++ b/Sources/FanBar/ModeSwitchReadiness.swift
+@@ -0,0 +1,45 @@
++import FanBarShared
++
++/// Whether the panel can start a switch that takes the fans from macOS.
++///
++/// When macOS stops a fan, the SMC reports `F%dSt` = 2 until the fan has run down,
++/// and only then 3 (stopped). A fan in state 2 does not start again before that,
++/// even with a new target, and the SMC accepts manual mode only from a running fan.
++/// The helper gives that takeover 10 s, so a switch started while a fan runs down
++/// fails and hands the fans back. Measured on a Mac16,7 (M4 Pro, macOS 27.2.1):
++/// state 2 lasts about 11 s after macOS stops the fans from 1,350 RPM, and a
++/// takeover from state 3 takes 7–8 s. Quitting FanBar hands the fans back, so this
++/// state follows every restart while the Mac is cool.
++enum ModeSwitchReadiness {
++    /// `F%dSt` while a stopped fan runs down.
++    static let spinningDownState: UInt8 = 2
++
++    /// True while macOS drives the fans and at least one of them runs down.
++    /// Macs without `F%dSt` never wait.
++    static func mustWait(macOSInControl: Bool, fans: [FanReading]) -> Bool {
++        macOSInControl && fans.contains { $0.spinState == spinningDownState }
++    }
++
++    /// Only a retry that takes the fans waits; handing them back to macOS
++    /// and the helper or sensor fixes stay available.
++    static func locks(_ recovery: FanController.ModeActionFeedback.Recovery, whileWaiting waiting: Bool) -> Bool {
++        guard waiting, case .retry(let target) = recovery else { return false }
++        return target != .restore
++    }
++
++    /// The line beside the spinner: a request in flight first, then the wait.
++    static func progressMessage(inProgress: String?, waiting: Bool) -> String? {
++        inProgress ?? (waiting ? waitingMessage : nil)
++    }
++
++    static var waitingMessage: String {
++        fanBarText("风扇正在停转，稍后可切换模式…", "Fans are spinning down. Modes unlock shortly…")
++    }
++}
++
++extension FanController {
++    /// The mode strip waits while a fan runs down; see `ModeSwitchReadiness`.
++    var mustWaitForFansToSpinDown: Bool {
++        ModeSwitchReadiness.mustWait(macOSInControl: mode == .automatic, fans: fans)
++    }
++}
+diff --git a/Sources/FanBar/SMCClient.swift b/Sources/FanBar/SMCClient.swift
+index 1199141..b6b2703 100644
+--- a/Sources/FanBar/SMCClient.swift
++++ b/Sources/FanBar/SMCClient.swift
+@@ -38,6 +38,9 @@ struct FanReading: Identifiable {
+     let currentRPM: Int
+     let maximumRPM: Int
+     let isManual: Bool
++    /// The SMC's own fan state (`F%dSt`); nil where the Mac has no such key.
++    /// `ModeSwitchReadiness` explains the values it uses.
++    var spinState: UInt8?
+     var id: Int { index }
+ }
+ 
+@@ -120,6 +123,7 @@ final class SMCClient: FanReadingSource {
+     private var batteryTemperatureKeys: [String]?
+     private var lastKeyProbe = Date.distantPast
+     private var systemPowerPacer = SMCOptionalKeyPacer(retryInterval: emptyProbeRetryInterval)
++    private var spinStatePacer = SMCOptionalKeyPacer(retryInterval: emptyProbeRetryInterval)
+     /// Sensors of a powered-down block can be missing at launch, so an empty
+     /// probe result is retried instead of being cached for the whole session.
+     private static let emptyProbeRetryInterval: TimeInterval = 30
+@@ -412,15 +416,25 @@ final class SMCClient: FanReadingSource {
+         let countValue = try read("FNum")
+         let count = Int(countValue.bytes.0)
+         guard (0...8).contains(count) else { throw SMCError.unsupportedKey("FNum", -1) }
++        let now = Date()
+         return try (0..<count).map { index in
+             FanReading(index: index,
+                        minimumRPM: try rpm(read("F\(index)Mn")),
+                        currentRPM: try rpm(read("F\(index)Ac")),
+                        maximumRPM: try rpm(read("F\(index)Mx")),
+-                       isManual: false)
++                       isManual: false,
++                       spinState: spinState(fan: index, at: now))
+         }
+     }
+ 
++    /// One byte from `F%dSt`; Macs without the key are asked again only after the pacer's interval.
++    private func spinState(fan index: Int, at date: Date) -> UInt8? {
++        guard spinStatePacer.shouldRead(at: date) else { return nil }
++        let state = (try? read("F\(index)St")).flatMap { $0.data_size == 1 ? $0.bytes.0 : nil }
++        spinStatePacer.record(found: state != nil, at: date)
++        return state
++    }
++
+     func thermalReading(at date: Date = Date()) -> ThermalReading {
+         var cpuValues = temperatures(
+             cachedKeys: &cpuTemperatureKeys,
+diff --git a/Sources/FanBarShared/FrenchCatalog.swift b/Sources/FanBarShared/FrenchCatalog.swift
+index cd8f478..b7bd8f3 100644
+--- a/Sources/FanBarShared/FrenchCatalog.swift
++++ b/Sources/FanBarShared/FrenchCatalog.swift
+@@ -446,6 +446,7 @@ enum FrenchCatalog {
+         "Styles": "Styles",
+         "Swirl": "Tourbillon",
+         "Switching to %@ curve…": "Passage à la courbe %@…",
++        "Fans are spinning down. Modes unlock shortly…": "Les ventilateurs s’arrêtent. Modes disponibles sous peu…",
+         "Switching to %d RPM…": "Passage à %d tr/min…",
+         "Target %@ (curve output %.0f%%)": "Cible %@ (sortie de courbe %.0f%%)",
+         "Temp": "Temp.",
+diff --git a/Sources/FanBarShared/JapaneseCatalog.swift b/Sources/FanBarShared/JapaneseCatalog.swift
+index 17ef7da..e6088af 100644
+--- a/Sources/FanBarShared/JapaneseCatalog.swift
++++ b/Sources/FanBarShared/JapaneseCatalog.swift
+@@ -457,6 +457,7 @@ enum JapaneseCatalog {
+         "Styles": "スタイル",
+         "Swirl": "渦巻き",
+         "Switching to %@ curve…": "%@のカーブに切り替え中…",
++        "Fans are spinning down. Modes unlock shortly…": "ファンが停止中です。まもなくモードを切り替えられます…",
+         "Switching to %d RPM…": "%d RPM に切り替え中…",
+         "Target %@ (curve output %.0f%%)": "目標 %@（カーブ出力 %.0f%%）",
+         "Temp": "温度",
+diff --git a/Sources/FanBarShared/KoreanCatalog+Settings.swift b/Sources/FanBarShared/KoreanCatalog+Settings.swift
+index 3a70caf..dc602cd 100644
+--- a/Sources/FanBarShared/KoreanCatalog+Settings.swift
++++ b/Sources/FanBarShared/KoreanCatalog+Settings.swift
+@@ -174,6 +174,7 @@ extension KoreanCatalog {
+         "Styles": "스타일",
+         "Swirl": "소용돌이",
+         "Switching to %@ curve…": "%@ 곡선으로 전환 중…",
++        "Fans are spinning down. Modes unlock shortly…": "팬이 멈추는 중입니다. 곧 모드를 바꿀 수 있습니다…",
+         "Switching to %d RPM…": "%d RPM으로 전환 중…",
+         "Target %@ (curve output %.0f%%)": "목표 %@ (곡선 출력 %.0f%%)",
+         "Temp": "온도",
+diff --git a/Sources/FanBarShared/RussianCatalog.swift b/Sources/FanBarShared/RussianCatalog.swift
+index fb4ccea..5175e2e 100644
+--- a/Sources/FanBarShared/RussianCatalog.swift
++++ b/Sources/FanBarShared/RussianCatalog.swift
+@@ -453,6 +453,7 @@ enum RussianCatalog {
+         "Styles": "Стили",
+         "Swirl": "Вихрь",
+         "Switching to %@ curve…": "Переключение на кривую «%@»…",
++        "Fans are spinning down. Modes unlock shortly…": "Вентиляторы останавливаются. Режимы скоро станут доступны…",
+         "Switching to %d RPM…": "Переключение на %d об/мин…",
+         "Target %@ (curve output %.0f%%)": "Цель %@ (выход кривой %.0f%%)",
+         "Temp": "Темп.",
+diff --git a/Tests/FanBarTests/ControlNoticeRenderingTests.swift b/Tests/FanBarTests/ControlNoticeRenderingTests.swift
+index fdc74d3..46b0a78 100644
+--- a/Tests/FanBarTests/ControlNoticeRenderingTests.swift
++++ b/Tests/FanBarTests/ControlNoticeRenderingTests.swift
+@@ -37,14 +37,31 @@ final class ControlNoticeRenderingTests: XCTestCase {
+         return host.fittingSize.height
+     }
+ 
+-    private func makeController() -> FanController {
++    private func makeController(source: FakeFanReadingSource = FakeFanReadingSource()) -> FanController {
+         let controller = FanController(notificationCenter: nil, widgetSnapshotDestination: .disabled,
+-                                       makeReadingSource: { FakeFanReadingSource() },
++                                       makeReadingSource: { source },
+                                        readUsage: { SystemUsage() }, refreshInterval: nil)
+         controller.refresh()
+         return controller
+     }
+ 
++    /// Both fans as the SMC reports them right after macOS stops them (`F%dSt` = 2).
++    private static func spinningDownSource() -> FakeFanReadingSource {
++        FakeFanReadingSource(readings: [
++            FanReading(index: 0, minimumRPM: 1_350, currentRPM: 0, maximumRPM: 5_777, isManual: false, spinState: 2),
++            FanReading(index: 1, minimumRPM: 1_350, currentRPM: 0, maximumRPM: 5_777, isManual: false, spinState: 2),
++        ])
++    }
++
++    private static let switchFailure = FanController.ModeActionFeedback(
++        kind: .failure,
++        localizedMessage: LocalizedControlText { "Unable to enable Silent curve" },
++        title: LocalizedControlText { fanBarFormat("风扇没有响应，%@未开启", "The fans didn't respond; %@ didn't start", "静音") },
++        safety: LocalizedControlText { fanBarText("风扇仍由 macOS 控制", "macOS is still controlling the fans") },
++        recovery: .retry(.preset(.builtIn(.silent))),
++        detail: "SMC operation F0Md failed (-536870206)"
++    )
++
+     private static let risk = FanController.ModeActionFeedback(
+         kind: .failure,
+         localizedMessage: LocalizedControlText { "Restore failed: SMC operation F0Md failed (-536870206)" },
+@@ -67,6 +84,20 @@ final class ControlNoticeRenderingTests: XCTestCase {
+         XCTAssertEqual(settle(host), resting, accuracy: 0.5)
+     }
+ 
++    func testSpinDownWaitKeepsThePanelHeight() {
++        let source = FakeFanReadingSource()
++        let controller = makeController(source: source)
++        let host = makeHost(controller)
++        controller.setControlStateForTesting(notice: nil, feedback: FanController.ModeActionFeedback(kind: .inProgress, message: "warm-up"))
++        controller.setControlStateForTesting(notice: nil)
++        let resting = settle(host)
++
++        source.readings = Self.spinningDownSource().readings
++        controller.refresh()
++        XCTAssertTrue(controller.mustWaitForFansToSpinDown)
++        XCTAssertEqual(settle(host), resting, accuracy: 0.5)
++    }
++
+     func testHandBackNoticeAddsOneRowUnderTheStrip() {
+         let controller = makeController()
+         let host = makeHost(controller)
+@@ -101,19 +132,17 @@ final class ControlNoticeRenderingTests: XCTestCase {
+             ReviewState(name: "sensor", notice: .handedBack(mode: .preset(.builtIn(.balanced)), reason: .missingTemperature(.cpu),
+                                                             duration: .thirtyMinutes, at: Date())),
+             ReviewState(name: "risk", feedback: Self.risk),
+-            ReviewState(name: "switch", feedback: FanController.ModeActionFeedback(
+-                kind: .failure,
+-                localizedMessage: LocalizedControlText { "Unable to enable Silent curve" },
+-                title: LocalizedControlText { fanBarFormat("风扇没有响应，%@未开启", "The fans didn't respond; %@ didn't start", "静音") },
+-                safety: LocalizedControlText { fanBarText("风扇仍由 macOS 控制", "macOS is still controlling the fans") },
+-                recovery: .retry(.preset(.builtIn(.silent))),
+-                detail: "SMC operation F0Md failed (-536870206)"
+-            )),
++            ReviewState(name: "switch", feedback: Self.switchFailure),
+             ReviewState(name: "unsupported", unsupported: true),
++            ReviewState(name: "spin-down", spinningDown: true),
++            ReviewState(name: "spin-down-en", spinningDown: true, language: .english),
++            ReviewState(name: "spin-down-after-failure", feedback: Self.switchFailure, spinningDown: true),
++            ReviewState(name: "spin-down-after-failure-en", feedback: Self.switchFailure, spinningDown: true, language: .english),
+         ]
+         for scheme in [ColorScheme.light, .dark] {
+             for state in states {
+-                let controller = makeController()
++                UserDefaults.standard.set(state.language.rawValue, forKey: FanBarLanguage.preferenceKey)
++                let controller = state.spinningDown ? makeController(source: Self.spinningDownSource()) : makeController()
+                 controller.setControlStateForTesting(notice: state.notice, feedback: state.feedback, unsupported: state.unsupported)
+                 let host = makeHost(controller, scheme: scheme)
+                 let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+@@ -138,4 +167,6 @@ private struct ReviewState {
+     var notice: ControlNotice?
+     var feedback: FanController.ModeActionFeedback?
+     var unsupported = false
++    var spinningDown = false
++    var language = FanBarLanguage.chinese
+ }
+diff --git a/Tests/FanBarTests/ModeSwitchReadinessTests.swift b/Tests/FanBarTests/ModeSwitchReadinessTests.swift
+new file mode 100644
+index 0000000..02413c5
+--- /dev/null
++++ b/Tests/FanBarTests/ModeSwitchReadinessTests.swift
+@@ -0,0 +1,82 @@
++import XCTest
++@testable import FanBar
++
++@MainActor
++final class ModeSwitchReadinessTests: XCTestCase {
++    private func fan(_ index: Int, spinState: UInt8?) -> FanReading {
++        FanReading(
++            index: index,
++            minimumRPM: 1_350,
++            currentRPM: 0,
++            maximumRPM: 5_777,
++            isManual: false,
++            spinState: spinState
++        )
++    }
++
++    func testSwitchWaitsWhileMacOSRunsAFanDown() {
++        XCTAssertTrue(ModeSwitchReadiness.mustWait(macOSInControl: true, fans: [fan(0, spinState: 2)]))
++        XCTAssertTrue(ModeSwitchReadiness.mustWait(
++            macOSInControl: true,
++            fans: [fan(0, spinState: 3), fan(1, spinState: 2)]
++        ))
++    }
++
++    func testSwitchDoesNotWaitForRunningStartingOrStoppedFans() {
++        for state: UInt8 in [1, 3, 5] {
++            XCTAssertFalse(
++                ModeSwitchReadiness.mustWait(macOSInControl: true, fans: [fan(0, spinState: state), fan(1, spinState: state)]),
++                "F0St = \(state)"
++            )
++        }
++    }
++
++    func testMacsWithoutTheFanStateKeyNeverWait() {
++        XCTAssertFalse(ModeSwitchReadiness.mustWait(macOSInControl: true, fans: [fan(0, spinState: nil)]))
++        XCTAssertFalse(ModeSwitchReadiness.mustWait(macOSInControl: true, fans: []))
++    }
++
++    func testFanBarControlNeverWaits() {
++        // The wait covers taking the fans from macOS only.
++        XCTAssertFalse(ModeSwitchReadiness.mustWait(macOSInControl: false, fans: [fan(0, spinState: 2)]))
++    }
++
++    func testOnlyRetriesThatTakeTheFansWait() {
++        typealias Recovery = FanController.ModeActionFeedback.Recovery
++        let performance = CoolingPresetID.builtIn(.performance)
++        XCTAssertTrue(ModeSwitchReadiness.locks(Recovery.retry(.preset(performance)), whileWaiting: true))
++        XCTAssertTrue(ModeSwitchReadiness.locks(Recovery.retry(.fixed(3_000)), whileWaiting: true))
++        XCTAssertFalse(ModeSwitchReadiness.locks(Recovery.retry(.restore), whileWaiting: true))
++        XCTAssertFalse(ModeSwitchReadiness.locks(Recovery.openHelperSettings, whileWaiting: true))
++        XCTAssertFalse(ModeSwitchReadiness.locks(Recovery.retry(.preset(performance)), whileWaiting: false))
++    }
++
++    func testProgressLineShowsARequestInFlightBeforeTheWait() {
++        XCTAssertEqual(ModeSwitchReadiness.progressMessage(inProgress: "Switching…", waiting: true), "Switching…")
++        XCTAssertEqual(
++            ModeSwitchReadiness.progressMessage(inProgress: nil, waiting: true),
++            ModeSwitchReadiness.waitingMessage
++        )
++        XCTAssertNil(ModeSwitchReadiness.progressMessage(inProgress: nil, waiting: false))
++    }
++
++    func testControllerWaitsWhileItsLatestReadingShowsAFanRunningDown() {
++        let source = FakeFanReadingSource(readings: [fan(0, spinState: 5), fan(1, spinState: 5)])
++        let controller = FanController(
++            notificationCenter: nil,
++            widgetSnapshotDestination: .disabled,
++            makeReadingSource: { source }
++        )
++        controller.refresh()
++        XCTAssertEqual(controller.mode, .automatic)
++        XCTAssertFalse(controller.mustWaitForFansToSpinDown)
++
++        source.readings = [fan(0, spinState: 2), fan(1, spinState: 2)]
++        controller.refresh()
++        XCTAssertTrue(controller.mustWaitForFansToSpinDown)
++
++        source.readings = [fan(0, spinState: 3), fan(1, spinState: 3)]
++        controller.refresh()
++        XCTAssertFalse(controller.mustWaitForFansToSpinDown)
++    }
++}
