@@ -1,8 +1,8 @@
 diff --git a/Sources/FanBarShared/FanBarHelperProtocol.swift b/Sources/FanBarShared/FanBarHelperProtocol.swift
-index 040279d..91b9f24 100644
+index 040279d..45022ea 100644
 --- a/Sources/FanBarShared/FanBarHelperProtocol.swift
 +++ b/Sources/FanBarShared/FanBarHelperProtocol.swift
-@@ -11,12 +11,7 @@ public enum FanBarService {
+@@ -11,12 +11,6 @@ public enum FanBarService {
  public enum FanControlTiming {
      public static let maximumFanCount = 8
      public static let manualModeUnlockSettle: TimeInterval = 0.5
@@ -12,12 +12,11 @@ index 040279d..91b9f24 100644
 -    /// such a fan restarted 12.3 s after macOS stopped it, and an unlock from stopped
 -    /// fans took up to 8.1 s, so a switch right after a hand-back needs about 20 s.
 -    /// 10 s made every switch in that window fail.
-+    /// Long enough for a fan that macOS just stopped to restart and unlock (about 20 s measured).
      public static let manualModeUnlockDeadline: TimeInterval = 30
      /// SMC reads and the target write surrounding each fan's unlock.
      public static let perFanIOAllowance: TimeInterval = 1
 diff --git a/Tests/FanBarHelperTests/SMCFanDriverTests.swift b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-index 9e49140..b13683e 100644
+index 9e49140..d90578a 100644
 --- a/Tests/FanBarHelperTests/SMCFanDriverTests.swift
 +++ b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
 @@ -176,9 +176,6 @@ final class SMCFanDriverTests: XCTestCase {
@@ -30,3 +29,11 @@ index 9e49140..b13683e 100644
      func testUnlockOutlastsAFanThatMacOSJustStopped() {
          let restartAfterStop: TimeInterval = 12.3
          let slowestUnlockFromStopped: TimeInterval = 8.1
+@@ -186,7 +183,6 @@ final class SMCFanDriverTests: XCTestCase {
+             SMCFanDriver.UnlockTiming.hardware.settle + SMCFanDriver.UnlockTiming.hardware.deadline,
+             restartAfterStop + slowestUnlockFromStopped
+         )
+-        // The app's reply timeout follows the same constant, so it never cuts the wait short.
+         XCTAssertEqual(SMCFanDriver.UnlockTiming.hardware.deadline, FanControlTiming.manualModeUnlockDeadline)
+     }
+ 

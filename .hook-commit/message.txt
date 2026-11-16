@@ -1,6 +1,6 @@
-docs(helper): cut the unlock deadline comments to one line
+docs(helper): drop the comments added with the unlock deadline
 
-The measurements belong in the pull request and the first commit
-message. Keep one line on manualModeUnlockDeadline and drop the doc
-comment of testUnlockOutlastsAFanThatMacOSJustStopped: the test name
-and its two named constants say the same.
+manualModeUnlockDeadline had no comment before the deadline change;
+only its value changes. The measurements are in the pull request and
+the first commit message. Also drop the new test's comments: the test
+name and its two named constants say the same.
