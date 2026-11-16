@@ -1,0 +1,83 @@
+# Fork-only tool (never part of an upstream PR). Builds an ad-hoc, arm64 FanBar.app from the
+# commit in .hwtest/ref.txt on FanBar's release Xcode pin, with the app group prefixed by the
+# team in the HWTEST_TEAM_ID secret. The owner signs it locally with that team's Apple
+# Development identity for a test on real fans. The artifact holds the team ID; it expires
+# after a day and is deleted after download.
+name: Fork hardware-test build
+
+on:
+  push:
+    branches:
+      - "hwtest/**"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: zsh {0}
+
+env:
+  # Same pin as macos-release.yml.
+  DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out the request
+        uses: actions/checkout@v4
+        with:
+          path: request
+
+      - name: Read the request
+        id: req
+        run: print "ref=$(<request/.hwtest/ref.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the commit under test
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.req.outputs.ref }}
+          path: work
+
+      - name: Prefix the app group with the test team
+        working-directory: work
+        env:
+          TEAM: ${{ secrets.HWTEST_TEAM_ID }}
+        run: |
+          [[ "$TEAM" =~ '^[A-Z0-9]{10}$' ]] || { print -u2 "HWTEST_TEAM_ID is not a 10-character team ID"; exit 1; }
+          files=(App/FanBar.entitlements WidgetExtension/FanBarWidget.entitlements Sources/FanBarShared/FanBarWidgetSnapshot.swift)
+          sed -i '' "s/64S5F787T9\.local\.fanbar\.app/${TEAM}.local.fanbar.app/" $files
+          if grep -q "64S5F787T9.local.fanbar.app" $files; then print -u2 "app group prefix not replaced"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/out"
+          cp App/FanBar.entitlements WidgetExtension/FanBarWidget.entitlements "$RUNNER_TEMP/out/"
+
+      - name: Show toolchain
+        working-directory: work
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Package (ad-hoc, arm64)
+        working-directory: work
+        env:
+          FANBAR_ALLOW_ADHOC: "1"
+          FANBAR_SIGN_IDENTITY: "-"
+          FANBAR_ARCHS: arm64
+        run: zsh scripts/package-app.sh
+
+      - name: Bundle the artifact
+        working-directory: work
+        run: |
+          ditto -c -k --keepParent dist/FanBar.app "$RUNNER_TEMP/out/FanBar.zip"
+          git rev-parse HEAD > "$RUNNER_TEMP/out/commit.txt"
+          ls -l "$RUNNER_TEMP/out"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwtest-app
+          path: ${{ runner.temp }}/out
+          retention-days: 1
