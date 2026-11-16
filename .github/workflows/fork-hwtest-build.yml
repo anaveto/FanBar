@@ -54,6 +54,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           cp App/FanBar.entitlements WidgetExtension/FanBarWidget.entitlements "$RUNNER_TEMP/out/"
 
+      # The release's Background Task Management item for local.fanbar.helper keeps its
+      # launch constraint (the release team) after an unregister, and a new registration
+      # with the same label reuses it, so AMFI kills a helper signed by another team. A test
+      # label gives the test helper its own item and leaves the release item untouched.
+      - name: Give the test helper its own launchd label
+        working-directory: work
+        run: |
+          files=(${(f)"$(git grep -l 'local\.fanbar\.helper' -- Sources App scripts)"})
+          sed -i '' 's/local\.fanbar\.helper/local.fanbar.hwtesthelper/g' $files
+          git mv App/local.fanbar.helper.plist App/local.fanbar.hwtesthelper.plist
+          if git grep -q 'local\.fanbar\.helper' -- Sources App scripts; then print -u2 "label not replaced everywhere"; exit 1; fi
+          grep -n hwtesthelper App/local.fanbar.hwtesthelper.plist Sources/FanBarShared/FanBarHelperProtocol.swift
+
       - name: Show toolchain
         working-directory: work
         run: |
