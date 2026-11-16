@@ -37,13 +37,33 @@ final class ControlNoticeRenderingTests: XCTestCase {
         return host.fittingSize.height
     }
 
-    private func makeController() -> FanController {
+    private func makeController(source: FakeFanReadingSource = FakeFanReadingSource()) -> FanController {
         let controller = FanController(notificationCenter: nil, widgetSnapshotDestination: .disabled,
-                                       makeReadingSource: { FakeFanReadingSource() },
+                                       makeReadingSource: { source },
                                        readUsage: { SystemUsage() }, refreshInterval: nil)
         controller.refresh()
         return controller
     }
+
+    /// Both fans at 0 RPM under macOS with the SMC fan state `F%dSt`:
+    /// 2 right after macOS stops them, 3 once they have run down.
+    private static func stoppedFansSource(spinState: UInt8 = 2) -> FakeFanReadingSource {
+        FakeFanReadingSource(readings: [
+            FanReading(index: 0, minimumRPM: 1_350, currentRPM: 0, maximumRPM: 5_777, isManual: false, spinState: spinState),
+            FanReading(index: 1, minimumRPM: 1_350, currentRPM: 0, maximumRPM: 5_777, isManual: false, spinState: spinState),
+        ])
+    }
+
+    private static let switchFailure = FanController.ModeActionFeedback(
+        kind: .failure,
+        localizedMessage: LocalizedControlText { "Unable to enable Silent curve" },
+        title: LocalizedControlText {
+            fanBarFormat("风扇没有响应，%@未开启", "The fans didn't respond; %@ didn't start", FanCoolingPreset.silent.title)
+        },
+        safety: LocalizedControlText { fanBarText("风扇仍由 macOS 控制", "macOS is still controlling the fans") },
+        recovery: .retry(.preset(.builtIn(.silent))),
+        detail: "SMC operation F0Md failed (-536870206)"
+    )
 
     private static let risk = FanController.ModeActionFeedback(
         kind: .failure,
@@ -64,6 +84,20 @@ final class ControlNoticeRenderingTests: XCTestCase {
         let resting = settle(host)
 
         controller.setControlStateForTesting(notice: nil, feedback: Self.risk)
+        XCTAssertEqual(settle(host), resting, accuracy: 0.5)
+    }
+
+    func testSpinDownWaitKeepsThePanelHeight() {
+        let source = FakeFanReadingSource()
+        let controller = makeController(source: source)
+        let host = makeHost(controller)
+        controller.setControlStateForTesting(notice: nil, feedback: FanController.ModeActionFeedback(kind: .inProgress, message: "warm-up"))
+        controller.setControlStateForTesting(notice: nil)
+        let resting = settle(host)
+
+        source.readings = Self.stoppedFansSource().readings
+        controller.refresh()
+        XCTAssertTrue(controller.mustWaitForFansToSpinDown)
         XCTAssertEqual(settle(host), resting, accuracy: 0.5)
     }
 
@@ -101,20 +135,26 @@ final class ControlNoticeRenderingTests: XCTestCase {
             ReviewState(name: "sensor", notice: .handedBack(mode: .preset(.builtIn(.balanced)), reason: .missingTemperature(.cpu),
                                                             duration: .thirtyMinutes, at: Date())),
             ReviewState(name: "risk", feedback: Self.risk),
-            ReviewState(name: "switch", feedback: FanController.ModeActionFeedback(
-                kind: .failure,
-                localizedMessage: LocalizedControlText { "Unable to enable Silent curve" },
-                title: LocalizedControlText { fanBarFormat("风扇没有响应，%@未开启", "The fans didn't respond; %@ didn't start", "静音") },
-                safety: LocalizedControlText { fanBarText("风扇仍由 macOS 控制", "macOS is still controlling the fans") },
-                recovery: .retry(.preset(.builtIn(.silent))),
-                detail: "SMC operation F0Md failed (-536870206)"
-            )),
+            ReviewState(name: "switch", feedback: Self.switchFailure),
             ReviewState(name: "unsupported", unsupported: true),
+            ReviewState(name: "spin-down", spinState: 2),
+            ReviewState(name: "spin-down-en", spinState: 2, language: .english),
+            ReviewState(name: "stopped-en", spinState: 3, language: .english),
+            ReviewState(name: "spin-down-after-failure", feedback: Self.switchFailure, spinState: 2),
+            ReviewState(name: "spin-down-after-failure-en", feedback: Self.switchFailure, spinState: 2, language: .english),
         ]
         for scheme in [ColorScheme.light, .dark] {
             for state in states {
-                let controller = makeController()
-                controller.setControlStateForTesting(notice: state.notice, feedback: state.feedback, unsupported: state.unsupported)
+                UserDefaults.standard.set(state.language.rawValue, forKey: FanBarLanguage.preferenceKey)
+                let source = state.spinState.map { Self.stoppedFansSource(spinState: $0) } ?? FakeFanReadingSource()
+                let controller = makeController(source: source)
+                controller.setControlStateForTesting(
+                    notice: state.notice,
+                    feedback: state.feedback,
+                    unsupported: state.unsupported,
+                    // The wait only shows with the control service on; off, the strip is locked anyway.
+                    helper: state.spinState == nil ? nil : .enabled
+                )
                 let host = makeHost(controller, scheme: scheme)
                 let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
@@ -138,4 +178,7 @@ private struct ReviewState {
     var notice: ControlNotice?
     var feedback: FanController.ModeActionFeedback?
     var unsupported = false
+    /// `F%dSt` of both fans, with the control service on; nil keeps the default fans.
+    var spinState: UInt8?
+    var language = FanBarLanguage.chinese
 }

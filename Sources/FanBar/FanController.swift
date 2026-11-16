@@ -994,11 +994,13 @@ final class FanController: ObservableObject {
     func setControlStateForTesting(
         notice: ControlNotice?,
         feedback: ModeActionFeedback? = nil,
-        unsupported: Bool = false
+        unsupported: Bool = false,
+        helper: HelperState? = nil
     ) {
         controlNotice = notice
         modeActionFeedback = feedback
         manualControlUnsupported = unsupported
+        if let helper { helperState = helper }
     }
     #endif
 

@@ -446,6 +446,7 @@ enum FrenchCatalog {
         "Styles": "Styles",
         "Swirl": "Tourbillon",
         "Switching to %@ curve…": "Passage à la courbe %@…",
+        "Fans are spinning down. Modes unlock shortly…": "Les ventilateurs s’arrêtent. Modes disponibles sous peu…",
         "Switching to %d RPM…": "Passage à %d tr/min…",
         "Target %@ (curve output %.0f%%)": "Cible %@ (sortie de courbe %.0f%%)",
         "Temp": "Temp.",

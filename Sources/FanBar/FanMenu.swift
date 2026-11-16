@@ -480,7 +480,10 @@ struct FanMenu: View {
             PanelSegmentedControl(options: modeOptions, selection: selectedMode, systemImage: modeIcon) { option in
                 select(option)
             }
-            .disabled(controller.isBusy || controller.helperState != .enabled || controller.manualControlUnsupported)
+            .disabled(
+                controller.isBusy || controller.helperState != .enabled || controller.manualControlUnsupported
+                    || controller.mustWaitForFansToSpinDown
+            )
             .animation(
                 animatesPanel ? .spring(response: 0.3, dampingFraction: 1) : .easeOut(duration: 0.15),
                 value: selectedMode
@@ -624,6 +627,13 @@ struct FanMenu: View {
         return feedback
     }
 
+    private var modeProgressMessage: String? {
+        ModeSwitchReadiness.progressMessage(
+            inProgress: inProgressFeedback?.message,
+            waiting: controller.mustWaitForFansToSpinDown
+        )
+    }
+
     /// Always laid out at a fixed height and faded in place, so a request in
     /// flight never re-measures the panel.
     private var modeProgressIndicator: some View {
@@ -632,7 +642,7 @@ struct FanMenu: View {
                 .controlSize(.small)
                 .scaleEffect(0.6)
                 .frame(width: 12, height: 12)
-            Text(inProgressFeedback?.message ?? " ")
+            Text(modeProgressMessage ?? " ")
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
@@ -640,9 +650,9 @@ struct FanMenu: View {
         }
         .frame(height: 16)
         .clipped()
-        .opacity(inProgressFeedback == nil ? 0 : 1)
-        .animation(animatesPanel ? .easeOut(duration: 0.15) : nil, value: inProgressFeedback == nil)
-        .accessibilityHidden(inProgressFeedback == nil)
+        .opacity(modeProgressMessage == nil ? 0 : 1)
+        .animation(animatesPanel ? .easeOut(duration: 0.15) : nil, value: modeProgressMessage == nil)
+        .accessibilityHidden(modeProgressMessage == nil)
     }
 
     /// What failed, whether the fans are safe, one way to recover, and the
@@ -699,6 +709,9 @@ struct FanMenu: View {
     @ViewBuilder
     private func failureActions(_ feedback: FanController.ModeActionFeedback) -> some View {
         if let recovery = feedback.recovery {
+            // The label has fixed colors, so dim it by hand while the retry waits.
+            let isLocked = controller.isBusy
+                || ModeSwitchReadiness.locks(recovery, whileWaiting: controller.mustWaitForFansToSpinDown)
             Button {
                 controller.performRecovery(recovery)
             } label: {
@@ -712,7 +725,8 @@ struct FanMenu: View {
             }
             .buttonStyle(PanelDimButtonStyle())
             .fixedSize()
-            .disabled(controller.isBusy)
+            .disabled(isLocked)
+            .opacity(isLocked ? 0.45 : 1)
         }
 
         if feedback.detail != nil {
@@ -879,7 +893,7 @@ struct FanMenu: View {
             } label: {
                 Text(fanBarText("重试", "Try again")).fontWeight(.semibold)
             }
-            .disabled(controller.isBusy || controller.helperState != .enabled)
+            .disabled(controller.isBusy || controller.helperState != .enabled || controller.mustWaitForFansToSpinDown)
         }
     }
 
@@ -911,7 +925,7 @@ struct FanMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .disabled(controller.isBusy || controller.helperState != .enabled)
+        .disabled(controller.isBusy || controller.helperState != .enabled || controller.mustWaitForFansToSpinDown)
     }
 
     /// Permanent on Macs whose SMC cannot hand fan control to an app.
@@ -1027,7 +1041,9 @@ struct FanMenu: View {
     }
 
     private var canBoostCooling: Bool {
-        guard controller.helperState == .enabled, !controller.isBusy else { return false }
+        guard controller.helperState == .enabled, !controller.isBusy, !controller.mustWaitForFansToSpinDown else {
+            return false
+        }
         if case .temperatureCurve = controller.mode, controller.curveCoolingPreset == Self.maximumCoolingPreset {
             return false
         }

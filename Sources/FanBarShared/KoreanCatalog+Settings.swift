@@ -174,6 +174,7 @@ extension KoreanCatalog {
         "Styles": "스타일",
         "Swirl": "소용돌이",
         "Switching to %@ curve…": "%@ 곡선으로 전환 중…",
+        "Fans are spinning down. Modes unlock shortly…": "팬이 멈추는 중입니다. 곧 모드를 바꿀 수 있습니다…",
         "Switching to %d RPM…": "%d RPM으로 전환 중…",
         "Target %@ (curve output %.0f%%)": "목표 %@ (곡선 출력 %.0f%%)",
         "Temp": "온도",

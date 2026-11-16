@@ -453,6 +453,7 @@ enum RussianCatalog {
         "Styles": "Стили",
         "Swirl": "Вихрь",
         "Switching to %@ curve…": "Переключение на кривую «%@»…",
+        "Fans are spinning down. Modes unlock shortly…": "Вентиляторы останавливаются. Режимы скоро станут доступны…",
         "Switching to %d RPM…": "Переключение на %d об/мин…",
         "Target %@ (curve output %.0f%%)": "Цель %@ (выход кривой %.0f%%)",
         "Temp": "Темп.",

@@ -457,6 +457,7 @@ enum JapaneseCatalog {
         "Styles": "スタイル",
         "Swirl": "渦巻き",
         "Switching to %@ curve…": "%@のカーブに切り替え中…",
+        "Fans are spinning down. Modes unlock shortly…": "ファンが停止中です。まもなくモードを切り替えられます…",
         "Switching to %d RPM…": "%d RPM に切り替え中…",
         "Target %@ (curve output %.0f%%)": "目標 %@（カーブ出力 %.0f%%）",
         "Temp": "温度",

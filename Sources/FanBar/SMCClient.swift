@@ -38,6 +38,9 @@ struct FanReading: Identifiable {
     let currentRPM: Int
     let maximumRPM: Int
     let isManual: Bool
+    /// The SMC's own fan state (`F%dSt`); nil where the Mac has no such key.
+    /// `ModeSwitchReadiness` explains the values it uses.
+    var spinState: UInt8?
     var id: Int { index }
 }
 
@@ -120,6 +123,7 @@ final class SMCClient: FanReadingSource {
     private var batteryTemperatureKeys: [String]?
     private var lastKeyProbe = Date.distantPast
     private var systemPowerPacer = SMCOptionalKeyPacer(retryInterval: emptyProbeRetryInterval)
+    private var spinStatePacer = SMCOptionalKeyPacer(retryInterval: emptyProbeRetryInterval)
     /// Sensors of a powered-down block can be missing at launch, so an empty
     /// probe result is retried instead of being cached for the whole session.
     private static let emptyProbeRetryInterval: TimeInterval = 30
@@ -412,13 +416,23 @@ final class SMCClient: FanReadingSource {
         let countValue = try read("FNum")
         let count = Int(countValue.bytes.0)
         guard (0...8).contains(count) else { throw SMCError.unsupportedKey("FNum", -1) }
+        let now = Date()
         return try (0..<count).map { index in
             FanReading(index: index,
                        minimumRPM: try rpm(read("F\(index)Mn")),
                        currentRPM: try rpm(read("F\(index)Ac")),
                        maximumRPM: try rpm(read("F\(index)Mx")),
-                       isManual: false)
+                       isManual: false,
+                       spinState: spinState(fan: index, at: now))
         }
+    }
+
+    /// One byte from `F%dSt`; Macs without the key are asked again only after the pacer's interval.
+    private func spinState(fan index: Int, at date: Date) -> UInt8? {
+        guard spinStatePacer.shouldRead(at: date) else { return nil }
+        let state = (try? read("F\(index)St")).flatMap { $0.data_size == 1 ? $0.bytes.0 : nil }
+        spinStatePacer.record(found: state != nil, at: date)
+        return state
     }
 
     func thermalReading(at date: Date = Date()) -> ThermalReading {
