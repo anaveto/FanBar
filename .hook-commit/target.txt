@@ -1,1 +1,1 @@
-fix/mode-switch-fan-spin-down
+fix/hand-back-when-macos-holds-fans

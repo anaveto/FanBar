@@ -3,6 +3,7 @@
 # (SwiftFormat, SwiftLint, unused-code scan, swift test) on the Xcode CI pins, then runs the
 # remaining CI checks (warnings-as-errors build, coverage diff gate, whole-repo lint) and the
 # panel review renders, and pushes the commit to the branch in .hook-commit/target.txt.
+# With .hook-commit/control-test.txt, it first shows that the named new test fails on the base.
 name: Fork hook commit
 
 on:
@@ -50,6 +51,23 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+
+      # Regression proof: the test files of the patch alone, on the base commit. The test named
+      # in .hook-commit/control-test.txt must fail there (an assertion failure, not a build error).
+      - name: New test fails without the fix
+        if: hashFiles('request/.hook-commit/control-test.txt') != ''
+        working-directory: work
+        run: |
+          filter=$(<../request/.hook-commit/control-test.txt)
+          git apply --include='Tests/*' ../request/.hook-commit/patch.diff
+          git status --short
+          if swift test --filter "$filter" > "$RUNNER_TEMP/control.log" 2>&1; then
+            cat "$RUNNER_TEMP/control.log"; print -u2 "$filter passed without the fix"; exit 1
+          fi
+          grep -E "error: .*${filter##*/}|Test Case .*${filter##*/}.* failed" "$RUNNER_TEMP/control.log" ||
+            { cat "$RUNNER_TEMP/control.log"; print -u2 "No assertion failure for $filter"; exit 1; }
+          print "$filter fails without the fix, as expected"
+          git checkout -- . && git clean -fdq -- Tests
 
       - name: Apply the change
         working-directory: work

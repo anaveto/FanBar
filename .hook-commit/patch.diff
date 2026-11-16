@@ -1,62 +1,56 @@
-diff --git a/Sources/FanBarShared/FanBarHelperProtocol.swift b/Sources/FanBarShared/FanBarHelperProtocol.swift
-index 4871ab6..040279d 100644
---- a/Sources/FanBarShared/FanBarHelperProtocol.swift
-+++ b/Sources/FanBarShared/FanBarHelperProtocol.swift
-@@ -11,7 +11,13 @@ public enum FanBarService {
- public enum FanControlTiming {
-     public static let maximumFanCount = 8
-     public static let manualModeUnlockSettle: TimeInterval = 0.5
--    public static let manualModeUnlockDeadline: TimeInterval = 10
-+    /// How long the driver retries a fan's manual mode after setting `Ftst`. The SMC
-+    /// accepts manual mode only from a running fan, and a fan that macOS has just
-+    /// stopped does not start again until it has run down. Measured on a Mac16,7:
-+    /// such a fan restarted 12.3 s after macOS stopped it, and an unlock from stopped
-+    /// fans took up to 8.1 s, so a switch right after a hand-back needs about 20 s.
-+    /// 10 s made every switch in that window fail.
-+    public static let manualModeUnlockDeadline: TimeInterval = 30
-     /// SMC reads and the target write surrounding each fan's unlock.
-     public static let perFanIOAllowance: TimeInterval = 1
- 
-diff --git a/Tests/FanBarHelperTests/SMCFanDriverTests.swift b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-index d9f32e8..9e49140 100644
---- a/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-+++ b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-@@ -176,6 +176,20 @@ final class SMCFanDriverTests: XCTestCase {
-         XCTAssertEqual(smc.rpm("F0Tg"), 0)
+diff --git a/Sources/FanBarHelper/SMCFanDriver.swift b/Sources/FanBarHelper/SMCFanDriver.swift
+index 26b1fb3..4ad5d44 100644
+--- a/Sources/FanBarHelper/SMCFanDriver.swift
++++ b/Sources/FanBarHelper/SMCFanDriver.swift
+@@ -335,17 +335,18 @@ final class SMCFanDriver {
+         return refusal
      }
  
-+    /// Measured on a Mac16,7 (M4 Pro, macOS 27.2.1): a fan that macOS has just
-+    /// stopped starts again 12.3 s later, and an unlock from stopped fans takes up
-+    /// to 8.1 s. A switch started right after a hand-back must not time out first.
-+    func testUnlockOutlastsAFanThatMacOSJustStopped() {
-+        let restartAfterStop: TimeInterval = 12.3
-+        let slowestUnlockFromStopped: TimeInterval = 8.1
-+        XCTAssertGreaterThan(
-+            SMCFanDriver.UnlockTiming.hardware.settle + SMCFanDriver.UnlockTiming.hardware.deadline,
-+            restartAfterStop + slowestUnlockFromStopped
-+        )
-+        // The app's reply timeout follows the same constant, so it never cuts the wait short.
-+        XCTAssertEqual(SMCFanDriver.UnlockTiming.hardware.deadline, FanControlTiming.manualModeUnlockDeadline)
+-    /// Some SMCs refuse a mode of 0 while `Ftst` is still set. Once `Ftst` is
+-    /// cleared, macOS may already have taken the fan back, or the write goes
+-    /// through. A fan still in manual mode is held at its minimum, never at a
+-    /// target of 0, which would keep it stopped however hot the Mac gets.
++    /// Some SMCs refuse a mode of 0 while `Ftst` is still set, and every mode
++    /// write while macOS holds the fan (mode 3). Once `Ftst` is cleared, macOS
++    /// may already have taken the fan back, or the write goes through. A fan
++    /// still in manual mode is held at its minimum, never at a target of 0,
++    /// which would keep it stopped however hot the Mac gets.
+     private func handBackRefusedFans(_ refused: [Int: Error], modes: [ModeControl]) -> Error? {
+         guard !refused.isEmpty, case .perFan(let format)? = modes.first else { return nil }
+         Thread.sleep(forTimeInterval: unlockTiming.settle)
+         var firstError: Error?
+         for (index, error) in refused.sorted(by: { $0.key < $1.key }) {
+             let key = String(format: format, index)
+-            let released = (try? store.read(key)).map { Self.bytes(of: $0).first == 0 } == true
++            let released = (try? isManualMode(fan: index)) == false
+                 || (try? writeBytes(key, bytes: [0])) != nil
+             if released {
+                 try? writeFloat("F\(index)Tg", value: 0)
+diff --git a/Tests/FanBarHelperTests/SMCFanDriverTests.swift b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
+index d9f32e8..b4d9e52 100644
+--- a/Tests/FanBarHelperTests/SMCFanDriverTests.swift
++++ b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
+@@ -290,6 +290,23 @@ final class SMCFanDriverTests: XCTestCase {
+         XCTAssertEqual(smc.bytes("Ftst"), [0])
+     }
+ 
++    /// After a hand-back, macOS sets the mode to 3 and refuses every mode write
++    /// (Mac16,7: `F0Md` = 3, `Ftst` = 0, `F0Md failed (65666)` at Quit in Auto).
++    func testRestoreSucceedsWhenMacOSAlreadyHoldsTheFans() throws {
++        let smc = FakeSMC.appleSilicon()
++        smc.set("F0md", bytes: [3])
++        smc.set("F1md", bytes: [3])
++        smc.failWrites(to: "F0md", code: badCommand)
++        smc.failWrites(to: "F1md", code: badCommand)
++
++        try driver(smc).restoreAutomatic()
++
++        XCTAssertEqual(smc.bytes("F0md"), [3])
++        XCTAssertEqual(smc.bytes("F1md"), [3])
++        XCTAssertEqual(smc.rpm("F0Tg"), 0, "A fan that macOS holds was given a manual target")
++        XCTAssertEqual(smc.rpm("F1Tg"), 0)
 +    }
 +
-     func testRejectedModeWriteWithoutForceTestFails() {
-         let smc = FakeSMC.appleSilicon(forceTest: false)
-         smc.rejectsManualMode = true
-diff --git a/integrations/raycast-extension/src/lib/fanbar.ts b/integrations/raycast-extension/src/lib/fanbar.ts
-index 75cc2ce..c1174f1 100644
---- a/integrations/raycast-extension/src/lib/fanbar.ts
-+++ b/integrations/raycast-extension/src/lib/fanbar.ts
-@@ -90,10 +90,10 @@ export const INSTALL_COMMAND =
- 
- // Must outlast fanbar's worst case, or Raycast kills it while a switch is still
- // being applied: launch wait 20 s (CLIConnection.launchConnectTimeout) + reply
--// timeout 117 s (FanBarCLIContract.replyTimeout = commandTimeout 102 s + 15 s,
--// commandTimeout = 10 s + 8 fans × 11.5 s) = 137 s, plus 13 s of margin.
-+// timeout 277 s (FanBarCLIContract.replyTimeout = commandTimeout 262 s + 15 s,
-+// commandTimeout = 10 s + 8 fans × 31.5 s) = 297 s, plus 13 s of margin.
- // RaycastExtensionTimeoutTests keeps this in step with the Swift constants.
--const TIMEOUT_MS = 150_000;
-+const TIMEOUT_MS = 310_000;
- 
- function isExecutable(path: string): boolean {
-   try {
+     func testReleasingTheDriverRestoresAutomatic() throws {
+         let smc = FakeSMC.appleSilicon()
+         do {

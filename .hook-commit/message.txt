@@ -1,13 +1,13 @@
-fix(helper): wait out a fan that macOS is spinning down before unlocking
+fix(helper): count a fan that macOS holds as handed back
 
-The SMC accepts manual mode only from a running fan. When macOS stops a
-fan, the fan does not start again for about 12 s, even with a new
-target. The driver gave the Ftst unlock 10 s, so each switch started in
-that window failed and handed the fans back. Quitting FanBar hands the
-fans back, so on a cool Mac a switch right after a relaunch failed.
+After a hand-back, macOS takes each fan in mode 3, and the SMC refuses
+every mode write until Ftst is set again. A restore in that state
+failed: the write of mode 0 was refused, and handBackRefusedFans
+counted only mode 0 as released. The driver logged "stayed in manual
+mode", wrote the minimum target to a fan that macOS controls and
+reported the restore as failed. Quit in Auto, the helper's restore
+when the last client disconnects, and the helper shutdown all ran into
+this.
 
-Measured on a Mac16,7: a just-stopped fan restarted 12.3 s after the
-stop, and an unlock from stopped fans took up to 8.1 s. Raise
-FanControlTiming.manualModeUnlockDeadline to 30 s. The app's write
-timeout and the CLI timeouts follow it; raise the Raycast extension's
-timeout to match (297 s worst case plus 13 s margin).
+Count every mode other than manual (isManualMode, mode 1) as released.
+A fan that is still in manual mode is held at its minimum, as before.
