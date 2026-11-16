@@ -1,13 +1,6 @@
-fix(helper): count a fan that macOS holds as handed back
+docs(helper): cut the unlock deadline comments to one line
 
-After a hand-back, macOS takes each fan in mode 3, and the SMC refuses
-every mode write until Ftst is set again. A restore in that state
-failed: the write of mode 0 was refused, and handBackRefusedFans
-counted only mode 0 as released. The driver logged "stayed in manual
-mode", wrote the minimum target to a fan that macOS controls and
-reported the restore as failed. Quit in Auto, the helper's restore
-when the last client disconnects, and the helper shutdown all ran into
-this.
-
-Count every mode other than manual (isManualMode, mode 1) as released.
-A fan that is still in manual mode is held at its minimum, as before.
+The measurements belong in the pull request and the first commit
+message. Keep one line on manualModeUnlockDeadline and drop the doc
+comment of testUnlockOutlastsAFanThatMacOSJustStopped: the test name
+and its two named constants say the same.

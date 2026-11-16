@@ -1,39 +1,32 @@
-diff --git a/Sources/FanBarHelper/SMCFanDriver.swift b/Sources/FanBarHelper/SMCFanDriver.swift
-index 26b1fb3..737d46f 100644
---- a/Sources/FanBarHelper/SMCFanDriver.swift
-+++ b/Sources/FanBarHelper/SMCFanDriver.swift
-@@ -345,7 +345,7 @@ final class SMCFanDriver {
-         var firstError: Error?
-         for (index, error) in refused.sorted(by: { $0.key < $1.key }) {
-             let key = String(format: format, index)
--            let released = (try? store.read(key)).map { Self.bytes(of: $0).first == 0 } == true
-+            let released = (try? isManualMode(fan: index)) == false
-                 || (try? writeBytes(key, bytes: [0])) != nil
-             if released {
-                 try? writeFloat("F\(index)Tg", value: 0)
+diff --git a/Sources/FanBarShared/FanBarHelperProtocol.swift b/Sources/FanBarShared/FanBarHelperProtocol.swift
+index 040279d..91b9f24 100644
+--- a/Sources/FanBarShared/FanBarHelperProtocol.swift
++++ b/Sources/FanBarShared/FanBarHelperProtocol.swift
+@@ -11,12 +11,7 @@ public enum FanBarService {
+ public enum FanControlTiming {
+     public static let maximumFanCount = 8
+     public static let manualModeUnlockSettle: TimeInterval = 0.5
+-    /// How long the driver retries a fan's manual mode after setting `Ftst`. The SMC
+-    /// accepts manual mode only from a running fan, and a fan that macOS has just
+-    /// stopped does not start again until it has run down. Measured on a Mac16,7:
+-    /// such a fan restarted 12.3 s after macOS stopped it, and an unlock from stopped
+-    /// fans took up to 8.1 s, so a switch right after a hand-back needs about 20 s.
+-    /// 10 s made every switch in that window fail.
++    /// Long enough for a fan that macOS just stopped to restart and unlock (about 20 s measured).
+     public static let manualModeUnlockDeadline: TimeInterval = 30
+     /// SMC reads and the target write surrounding each fan's unlock.
+     public static let perFanIOAllowance: TimeInterval = 1
 diff --git a/Tests/FanBarHelperTests/SMCFanDriverTests.swift b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-index d9f32e8..4c45b83 100644
+index 9e49140..b13683e 100644
 --- a/Tests/FanBarHelperTests/SMCFanDriverTests.swift
 +++ b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-@@ -290,6 +290,21 @@ final class SMCFanDriverTests: XCTestCase {
-         XCTAssertEqual(smc.bytes("Ftst"), [0])
+@@ -176,9 +176,6 @@ final class SMCFanDriverTests: XCTestCase {
+         XCTAssertEqual(smc.rpm("F0Tg"), 0)
      }
  
-+    func testRestoreSucceedsWhenMacOSAlreadyHoldsTheFans() throws {
-+        let smc = FakeSMC.appleSilicon()
-+        smc.set("F0md", bytes: [3])
-+        smc.set("F1md", bytes: [3])
-+        smc.failWrites(to: "F0md", code: badCommand)
-+        smc.failWrites(to: "F1md", code: badCommand)
-+
-+        try driver(smc).restoreAutomatic()
-+
-+        XCTAssertEqual(smc.bytes("F0md"), [3])
-+        XCTAssertEqual(smc.bytes("F1md"), [3])
-+        XCTAssertEqual(smc.rpm("F0Tg"), 0, "A fan that macOS holds was given a manual target")
-+        XCTAssertEqual(smc.rpm("F1Tg"), 0)
-+    }
-+
-     func testReleasingTheDriverRestoresAutomatic() throws {
-         let smc = FakeSMC.appleSilicon()
-         do {
+-    /// Measured on a Mac16,7 (M4 Pro, macOS 27.2.1): a fan that macOS has just
+-    /// stopped starts again 12.3 s later, and an unlock from stopped fans takes up
+-    /// to 8.1 s. A switch started right after a hand-back must not time out first.
+     func testUnlockOutlastsAFanThatMacOSJustStopped() {
+         let restartAfterStop: TimeInterval = 12.3
+         let slowestUnlockFromStopped: TimeInterval = 8.1

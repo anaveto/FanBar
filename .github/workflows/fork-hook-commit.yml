@@ -37,11 +37,15 @@ jobs:
         run: |
           print "base=$(<request/.hook-commit/base.txt)" >> "$GITHUB_OUTPUT"
           print "target=$(<request/.hook-commit/target.txt)" >> "$GITHUB_OUTPUT"
+          # The base commit's repository: upstream, or the fork for a follow-up commit on a PR branch.
+          repo=helson-lin/FanBar
+          [[ -f request/.hook-commit/repo.txt ]] && repo=$(<request/.hook-commit/repo.txt)
+          print "repo=$repo" >> "$GITHUB_OUTPUT"
 
-      - name: Check out upstream at the base commit
+      - name: Check out the base commit
         uses: actions/checkout@v4
         with:
-          repository: helson-lin/FanBar
+          repository: ${{ steps.req.outputs.repo }}
           ref: ${{ steps.req.outputs.base }}
           fetch-depth: 0
           path: work
