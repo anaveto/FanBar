@@ -1,23 +1,8 @@
 diff --git a/Sources/FanBarHelper/SMCFanDriver.swift b/Sources/FanBarHelper/SMCFanDriver.swift
-index 26b1fb3..4ad5d44 100644
+index 26b1fb3..737d46f 100644
 --- a/Sources/FanBarHelper/SMCFanDriver.swift
 +++ b/Sources/FanBarHelper/SMCFanDriver.swift
-@@ -335,17 +335,18 @@ final class SMCFanDriver {
-         return refusal
-     }
- 
--    /// Some SMCs refuse a mode of 0 while `Ftst` is still set. Once `Ftst` is
--    /// cleared, macOS may already have taken the fan back, or the write goes
--    /// through. A fan still in manual mode is held at its minimum, never at a
--    /// target of 0, which would keep it stopped however hot the Mac gets.
-+    /// Some SMCs refuse a mode of 0 while `Ftst` is still set, and every mode
-+    /// write while macOS holds the fan (mode 3). Once `Ftst` is cleared, macOS
-+    /// may already have taken the fan back, or the write goes through. A fan
-+    /// still in manual mode is held at its minimum, never at a target of 0,
-+    /// which would keep it stopped however hot the Mac gets.
-     private func handBackRefusedFans(_ refused: [Int: Error], modes: [ModeControl]) -> Error? {
-         guard !refused.isEmpty, case .perFan(let format)? = modes.first else { return nil }
-         Thread.sleep(forTimeInterval: unlockTiming.settle)
+@@ -345,7 +345,7 @@ final class SMCFanDriver {
          var firstError: Error?
          for (index, error) in refused.sorted(by: { $0.key < $1.key }) {
              let key = String(format: format, index)
@@ -27,15 +12,13 @@ index 26b1fb3..4ad5d44 100644
              if released {
                  try? writeFloat("F\(index)Tg", value: 0)
 diff --git a/Tests/FanBarHelperTests/SMCFanDriverTests.swift b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-index d9f32e8..b4d9e52 100644
+index d9f32e8..4c45b83 100644
 --- a/Tests/FanBarHelperTests/SMCFanDriverTests.swift
 +++ b/Tests/FanBarHelperTests/SMCFanDriverTests.swift
-@@ -290,6 +290,23 @@ final class SMCFanDriverTests: XCTestCase {
+@@ -290,6 +290,21 @@ final class SMCFanDriverTests: XCTestCase {
          XCTAssertEqual(smc.bytes("Ftst"), [0])
      }
  
-+    /// After a hand-back, macOS sets the mode to 3 and refuses every mode write
-+    /// (Mac16,7: `F0Md` = 3, `Ftst` = 0, `F0Md failed (65666)` at Quit in Auto).
 +    func testRestoreSucceedsWhenMacOSAlreadyHoldsTheFans() throws {
 +        let smc = FakeSMC.appleSilicon()
 +        smc.set("F0md", bytes: [3])
